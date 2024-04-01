@@ -5,7 +5,7 @@ const jwt = require('jsonwebtoken');
 const { authMiddleware } = require('../middleware');
 const { JWT_SECRET } = require('../config');
 const router = express.Router();
-
+const bcrypt = require("bcrypt")
 
 const signUpValidation = zod.object({
     username: zod.string().email(),
@@ -13,27 +13,30 @@ const signUpValidation = zod.object({
     firstName: zod.string(),
     lastName: zod.string(),
 })
-
 router.post('/signup', async (req, res) => {
+    const {username, password, firstName, lastName} = req.body
     const { success } = signUpValidation.safeParse(req.body)
     if (!success) {
-        return res.status(411).json({
-            message: "wrong inputs"
+        return res.status(400).json({
+            message: "Wrong inputs"
         })
     }
     const existingUser = await User.findOne({
         username: req.body.username
     })
     if (existingUser) {
-        return res.status(411).json({
+        return res.status(400).json({
             message: "Email already taken"
         })
     }
+
+    // const hashedPassword = await bcrypt.hash(password, 10)
+
     const user = await User.create({
-        username: req.body.username,
-        password: req.body.password,
-        firstName: req.body.firstName,
-        lastName: req.body.lastName,
+        username: username,
+        password: password,
+        firstName: firstName,
+        lastName: lastName,
     })
 
     const userId = user._id
@@ -49,28 +52,41 @@ router.post('/signup', async (req, res) => {
 
 
     res.json({
-
         message: "User created successfully",
         token: token
     })
 })
-
 const signInValidation = zod.object({
     username: zod.string().email(),
     password: zod.string()
 })
 router.post('/signin', async (req, res) => {
+    const { password } = req.body
     const { success } = signInValidation.safeParse(req.body)
     if (!success) {
-        return res.status(411).json({
+        return res.status(400).json({
             message: "Error while logging in for parsing"
         })
     }
     const user = await User.findOne({
         username: req.body.username,
-        password: req.body.password,
     });
 
+    if(!user){
+        return res.status(400).json({
+            message: "Incorrect username"
+        })
+    }
+
+    // const passwordMatch = await bcrypt.compare(
+    //     password,
+    //     user.password
+    // )
+    // if(!passwordMatch){
+    //     return res.status(401).json({
+    //         message: "Incorrect password"
+    //     })
+    // }
     if (user) {
         const token = jwt.sign({
             userId: user._id
@@ -80,7 +96,7 @@ router.post('/signin', async (req, res) => {
         })
         return;
     }
-    res.status(411).json({
+    res.status(400).json({
         message: "Error while logging in"
     })
 })
