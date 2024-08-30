@@ -20,7 +20,7 @@ router.post('/addBalance', authMiddleware, async (req, res) => {
         userId: req.userId
     })
     let balance = account.balance
-    if (balance >= 4500) {
+    if (balance >= 2500) {
         res.status(411).json({
             message: "amount more than 2500"
         })
@@ -66,25 +66,21 @@ router.get('/transactions', authMiddleware, async (req, res) => {
 
 router.post('/transfer', authMiddleware, async (req, res) => {
     const session = await mongoose.startSession();
-    session.startTransaction();
+    session.startTransaction({
+        readConcern: { level: 'snapshot' }, //to avoid dirty reads, non-repeatable reads
+        writeConcern: { w: 'majority' } //write is acknowledged by majority of replica sets
+    });
 
     try {
         const { amount, to } = req.body;
         const senderAccountId = req.userId;
-        const receiverAccountId = to; // Assuming to contains the receiver's account ID
+        const receiverAccountId = to;
 
-        // Log the senderAccountId and receiverAccountId to ensure they are received correctly
-        console.log('Sender Account ID:', senderAccountId);
-        console.log('Receiver Account ID:', receiverAccountId);
+        const [senderAccount, receiverAccount] = await Promise.all([
+            Account.findOne({ userId: senderAccountId }).session(session),
+            Account.findOne({ userId: receiverAccountId }).session(session)
+        ])
 
-        const senderAccount = await Account.findOne({ userId: senderAccountId }).session(session);
-        const receiverAccount = await Account.findOne({ userId: receiverAccountId }).session(session);
-
-        // Log the senderAccount and receiverAccount to ensure they are retrieved correctly
-        console.log('Sender Account:', senderAccount);
-        console.log('Receiver Account:', receiverAccount);
-
-        // Check if receiverAccount is found
         if (!receiverAccount) {
             await session.abortTransaction()
             return res.status(404).json({ message: "Receiver account not found" });
@@ -95,6 +91,8 @@ router.post('/transfer', authMiddleware, async (req, res) => {
             return res.status(404).json({ message: "Insufficient balance" })
         }
 
+        const oldTotalBalance = senderAccount.balance + receiverAccount.balance;
+
         senderAccount.balance -= amount;
         receiverAccount.balance += amount;
 
@@ -102,25 +100,42 @@ router.post('/transfer', authMiddleware, async (req, res) => {
         await receiverAccount.save();
 
         // Create a new transaction
-        const transaction = new Transaction({ 
-            from: senderAccountId, // Assign the sender's account ID
-            to: receiverAccount.userId, // Assign the receiver's user ID, not account ID
-            amount 
+        const transaction = new Transaction({
+            from: senderAccountId,
+            to: receiverAccount.userId,
+            amount
         });
 
-        await transaction.save();
+
+        await Promise.all([
+            senderAccount.save({ session }),
+            receiverAccount.save({ session }),
+            transaction.save({ session })
+        ])
 
         senderAccount.transactions.push(transaction._id);
         receiverAccount.transactions.push(transaction._id);
 
-        await senderAccount.save();
-        await receiverAccount.save();
+        await Promise.all([
+            senderAccount.save({ session }),
+            receiverAccount.save({ session })
+        ]);
+
+        const newTotalBalance = senderAccount.balance + receiverAccount.balance;
+
+        if (oldTotalBalance !== newTotalBalance) {
+            throw new Error("Consistency check failed: Total balance changed")
+        }
 
         await session.commitTransaction();
-        res.json({ message: "Transfer Successfully done" })
+        res.json({ message: "Transfer Successfully completed" })
     } catch (error) {
         await session.abortTransaction()
-        res.status(500).json({ message: error.message })
+        if (error.message === "Receiver account not found" || error.message === "Insufficient balance") {
+            res.status(400).json({ message: error.message });
+        } else {
+            res.status(500).json({ message: "An error occurred during the transfer" });
+        }
     } finally {
         session.endSession()
     }
