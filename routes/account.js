@@ -63,18 +63,15 @@ router.get('/transactions', authMiddleware, async (req, res) => {
 });
 
 router.post('/transfer', authMiddleware, async (req, res) => {
-    const session = await mongoose.startSession();
-    session.startTransaction({
-        readConcern: { level: 'snapshot' },
-        writeConcern: { w: 'majority' }
-    });
-
+    let session;
     try {
+        session = await mongoose.startSession();
+        session.startTransaction();
+
         const { amount, to } = req.body;
         const senderAccountId = req.userId;
         const receiverAccountId = to;
 
-        // Convert amount to a number
         const transferAmount = Number(amount);
 
         if (isNaN(transferAmount) || transferAmount <= 0) {
@@ -99,7 +96,6 @@ router.post('/transfer', authMiddleware, async (req, res) => {
         senderAccount.balance -= transferAmount;
         receiverAccount.balance += transferAmount;
 
-        // Create a new transaction
         const transaction = new Transaction({
             from: senderAccountId,
             to: receiverAccount.userId,
@@ -124,7 +120,9 @@ router.post('/transfer', authMiddleware, async (req, res) => {
         await session.commitTransaction();
         res.json({ message: "Transfer successfully completed" });
     } catch (error) {
-        await session.abortTransaction();
+        if (session) {
+            await session.abortTransaction();
+        }
         console.error("Transfer error:", error);
         if (error.message === "Receiver account not found" || 
             error.message === "Insufficient balance" ||
@@ -134,7 +132,9 @@ router.post('/transfer', authMiddleware, async (req, res) => {
             res.status(500).json({ message: "An error occurred during the transfer", error: error.message });
         }
     } finally {
-        session.endSession();
+        if (session) {
+            session.endSession();
+        }
     }
 });
 
