@@ -62,13 +62,11 @@ router.get('/transactions', authMiddleware, async (req, res) => {
     }
 });
 
-
-
 router.post('/transfer', authMiddleware, async (req, res) => {
     const session = await mongoose.startSession();
     session.startTransaction({
-        readConcern: { level: 'snapshot' }, //to avoid dirty reads, non-repeatable reads
-        writeConcern: { w: 'majority' } //write is acknowledged by majority of replica sets
+        readConcern: { level: 'snapshot' },
+        writeConcern: { w: 'majority' }
     });
 
     try {
@@ -76,71 +74,69 @@ router.post('/transfer', authMiddleware, async (req, res) => {
         const senderAccountId = req.userId;
         const receiverAccountId = to;
 
+        // Convert amount to a number
+        const transferAmount = Number(amount);
+
+        if (isNaN(transferAmount) || transferAmount <= 0) {
+            throw new Error("Invalid transfer amount");
+        }
+
         const [senderAccount, receiverAccount] = await Promise.all([
             Account.findOne({ userId: senderAccountId }).session(session),
             Account.findOne({ userId: receiverAccountId }).session(session)
-        ])
+        ]);
 
         if (!receiverAccount) {
-            await session.abortTransaction()
-            return res.status(404).json({ message: "Receiver account not found" });
+            throw new Error("Receiver account not found");
         }
 
-        if (!senderAccount || senderAccount.balance < amount) {
-            await session.abortTransaction()
-            return res.status(404).json({ message: "Insufficient balance" })
+        if (!senderAccount || senderAccount.balance < transferAmount) {
+            throw new Error("Insufficient balance");
         }
 
         const oldTotalBalance = senderAccount.balance + receiverAccount.balance;
 
-        senderAccount.balance -= amount;
-        receiverAccount.balance += amount;
-
-        await senderAccount.save();
-        await receiverAccount.save();
+        senderAccount.balance -= transferAmount;
+        receiverAccount.balance += transferAmount;
 
         // Create a new transaction
         const transaction = new Transaction({
             from: senderAccountId,
             to: receiverAccount.userId,
-            amount
+            amount: transferAmount
         });
-
-
-        await Promise.all([
-            senderAccount.save({ session }),
-            receiverAccount.save({ session }),
-            transaction.save({ session })
-        ])
 
         senderAccount.transactions.push(transaction._id);
         receiverAccount.transactions.push(transaction._id);
 
         await Promise.all([
             senderAccount.save({ session }),
-            receiverAccount.save({ session })
+            receiverAccount.save({ session }),
+            transaction.save({ session })
         ]);
 
         const newTotalBalance = senderAccount.balance + receiverAccount.balance;
 
-        if (oldTotalBalance !== newTotalBalance) {
-            throw new Error("Consistency check failed: Total balance changed")
+        if (Math.abs(oldTotalBalance - newTotalBalance) > Number.EPSILON) {
+            throw new Error("Consistency check failed: Total balance changed");
         }
 
         await session.commitTransaction();
-        res.json({ message: "Transfer Successfully completed" })
+        res.json({ message: "Transfer successfully completed" });
     } catch (error) {
-        await session.abortTransaction()
-        if (error.message === "Receiver account not found" || error.message === "Insufficient balance") {
+        await session.abortTransaction();
+        console.error("Transfer error:", error);
+        if (error.message === "Receiver account not found" || 
+            error.message === "Insufficient balance" ||
+            error.message === "Invalid transfer amount") {
             res.status(400).json({ message: error.message });
         } else {
-            res.status(500).json({ message: "An error occurred during the transfer" });
+            res.status(500).json({ message: "An error occurred during the transfer", error: error.message });
         }
     } finally {
-        session.endSession()
+        session.endSession();
     }
 });
-
 
 
 
